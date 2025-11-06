@@ -1,6 +1,6 @@
 # Copyright 2025 Camptocamp SA
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
-
+from collections import defaultdict
 from datetime import timedelta
 
 from odoo import fields, models
@@ -25,44 +25,54 @@ class ResourceCalendar(models.Model):
         """
         # Ensure timezone awareness
         assert start_dt.tzinfo and end_dt.tzinfo, "Datetimes must be timezone-aware"
-        if self.exclude_weekends and self.flexible_hours:
-            # Convert start_dt to target timezone for checking day of week
-            local_start = start_dt
 
-            # 0=Monday, 6=Sunday
-            weekday = local_start.weekday()
-            if weekday in (5, 6):  # Saturday or Sunday
-                # Move to next Monday
-                days_to_monday = 7 - weekday
-                local_start = local_start + timedelta(days=days_to_monday)
-                start_dt = local_start
+        # 0=Monday, 6=Sunday
+        weekday = start_dt.weekday()
+        skipping_start_dt = start_dt
+        if weekday in (5, 6):  # Saturday or Sunday
+            # Move to next Monday
+            days_to_monday = 7 - weekday
+            skipping_start_dt += timedelta(days=days_to_monday)
+        if not resources:
+            resources = self.env["resource.resource"]
+            resources_list = [resources]
+        else:
+            resources_list = list(resources) + [self.env["resource.resource"]]
 
-        res = super()._attendance_intervals_batch(
-            start_dt, end_dt, resources, domain, tz, lunch
+        resources_with_flex_no_weekend = []
+        other_resources = []
+        for resource in resources_list:
+            if (
+                resource
+                and resource.calendar_id.flexible_hours
+                and resource.calendar_id.exclude_weekends
+            ) or (self.flexible_hours and self.exclude_weekends):
+                resources_with_flex_no_weekend.append(resource)
+            else:
+                other_resources.append(resources)
+
+        res_others = super()._attendance_intervals_batch(
+            start_dt, end_dt, other_resources, domain, tz, lunch
         )
-
-        # Filter out weekends from each WorkIntervals
-        filtered_results = {}
-        # if exclude_weekends AND flexible_hours is True,
-        # filter work intervals to remove weekends
-        if self.exclude_weekends and self.flexible_hours:
-            for resource_id, work_intervals in res.items():
-                new_intervals = []
-                # Each interval = (start_datetime, end_datetime, attendance_record)
+        # for resources which should skip weekend we have to iterate by week
+        skipping_res = defaultdict(list)
+        while skipping_start_dt < end_dt:
+            res_skip = super()._attendance_intervals_batch(
+                skipping_start_dt,
+                end_dt,
+                resources_with_flex_no_weekend,
+                domain,
+                tz,
+                lunch,
+            )
+            for resource, work_intervals in res_skip.items():
+                new_intervals = skipping_res[resource]
                 for start, end, attendance in work_intervals:
-                    # Check if start or end is during weekend
-                    # weekday(): Monday = 0 ... Sunday = 6
-                    if start.weekday() in (5, 6) or end.weekday() in (
-                        5,
-                        6,
-                    ):
-                        continue  # skip weekends
-                    new_intervals.append((start, end, attendance))
-
-                # Create new WorkIntervals from filtered data
-                filtered_results[resource_id] = WorkIntervals(new_intervals)
-
-            # Return the filtered WorkIntervals per resource
-            return filtered_results
-
-        return res
+                    if start.weekday() not in (5, 6):
+                        new_intervals.append((start, end, attendance))
+            # go to next monday
+            skipping_start_dt += timedelta(days=7 - skipping_start_dt.weekday())
+        # merge both result set
+        for resource, intervals in skipping_res.items():
+            res_others[resource] = WorkIntervals(intervals)
+        return res_others
