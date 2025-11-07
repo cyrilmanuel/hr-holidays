@@ -148,5 +148,5 @@ class TestResourceCalendar(TransactionCase):
             start_dt,
             end_dt,
             6 * 8,
-            "for 10d starting on Mon: you get 6d",
+            "for 10d starting on Fri: you get 6d",
         )
