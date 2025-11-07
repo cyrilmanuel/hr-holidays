@@ -51,28 +51,40 @@ class ResourceCalendar(models.Model):
             else:
                 other_resources.append(resources)
 
-        res_others = super()._attendance_intervals_batch(
-            start_dt, end_dt, other_resources, domain, tz, lunch
-        )
-        # for resources which should skip weekend we have to iterate by week
-        skipping_res = defaultdict(list)
-        while skipping_start_dt < end_dt:
-            res_skip = super()._attendance_intervals_batch(
-                skipping_start_dt,
-                end_dt,
-                resources_with_flex_no_weekend,
-                domain,
-                tz,
-                lunch,
+        if other_resources:
+            res_others = super()._attendance_intervals_batch(
+                start_dt, end_dt, other_resources, domain, tz, lunch
             )
-            for resource, work_intervals in res_skip.items():
-                new_intervals = skipping_res[resource]
-                for start, end, attendance in work_intervals:
-                    if start.weekday() not in (5, 6):
-                        new_intervals.append((start, end, attendance))
-            # go to next monday
-            skipping_start_dt += timedelta(days=7 - skipping_start_dt.weekday())
-        # merge both result set
-        for resource, intervals in skipping_res.items():
-            res_others[resource] = WorkIntervals(intervals)
+        else:
+            res_others = {}
+        if resources_with_flex_no_weekend:
+            # for resources which should skip weekend we have to iterate by week
+            skipping_res = defaultdict(list)
+            # XXX Maybe we can be smarter and only do 1 or 2 calls:
+            # 1 call if the first day is a monday, and a second if we need to
+            # check the following week.
+            while skipping_start_dt < end_dt:
+                # find the end of the current week or the end of the period
+                skipping_end_dt = skipping_start_dt + timedelta(
+                    days=7 - skipping_start_dt.weekday()
+                )
+                skipping_end_dt = min(skipping_end_dt, end_dt)
+                res_skip = super()._attendance_intervals_batch(
+                    skipping_start_dt,
+                    skipping_end_dt,
+                    resources_with_flex_no_weekend,
+                    domain,
+                    tz,
+                    lunch,
+                )
+                for resource, work_intervals in res_skip.items():
+                    new_intervals = skipping_res[resource]
+                    for start, end, attendance in work_intervals:
+                        if start.weekday() not in (5, 6):
+                            new_intervals.append((start, end, attendance))
+                # go to next monday
+                skipping_start_dt = skipping_end_dt
+            # merge both result set
+            for resource, intervals in skipping_res.items():
+                res_others[resource] = WorkIntervals(intervals)
         return res_others
